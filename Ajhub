@@ -1,0 +1,162 @@
+--[[
+    Ajhub - Universal Teleport (Keyless)
+    Type coordinates like:  4839, 28, -29
+    Then press TELEPORT!
+]]
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+
+-- Pick the safest place to put the GUI
+local function getGuiParent()
+    local ok, parent = pcall(function()
+        if gethui then return gethui() end
+        return game:GetService("CoreGui")
+    end)
+    if ok and parent then return parent end
+    return LocalPlayer:WaitForChild("PlayerGui")
+end
+
+-- Remove old copy if executed twice
+local parent = getGuiParent()
+local old = parent:FindFirstChild("Ajhub")
+if old then old:Destroy() end
+
+-- GUI
+local gui = Instance.new("ScreenGui")
+gui.Name = "Ajhub"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = parent
+
+-- Small, see-through window (does NOT cover the screen)
+local frame = Instance.new("Frame")
+frame.Name = "Main"
+frame.Size = UDim2.fromOffset(250, 140)
+frame.Position = UDim2.new(0.5, -125, 0.5, -70)
+frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+frame.BackgroundTransparency = 0.55
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Parent = gui
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -40, 0, 28)
+title.Position = UDim2.fromOffset(10, 4)
+title.BackgroundTransparency = 1
+title.Text = "Ajhub"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Font = Enum.Font.GothamBold
+title.TextSize = 16
+title.Parent = frame
+
+local close = Instance.new("TextButton")
+close.Size = UDim2.fromOffset(24, 24)
+close.Position = UDim2.new(1, -30, 0, 6)
+close.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+close.BackgroundTransparency = 0.3
+close.Text = "X"
+close.TextColor3 = Color3.new(1, 1, 1)
+close.Font = Enum.Font.GothamBold
+close.TextSize = 14
+close.BorderSizePixel = 0
+close.Parent = frame
+Instance.new("UICorner", close).CornerRadius = UDim.new(0, 6)
+close.MouseButton1Click:Connect(function() gui:Destroy() end)
+
+-- Semi-transparent coordinate box (clearly visible against the game)
+local box = Instance.new("TextBox")
+box.Size = UDim2.new(1, -20, 0, 34)
+box.Position = UDim2.fromOffset(10, 38)
+box.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+box.BackgroundTransparency = 0.45
+box.BorderSizePixel = 0
+box.Text = ""
+box.PlaceholderText = "Enter position: X, Y, Z"
+box.PlaceholderColor3 = Color3.fromRGB(190, 190, 190)
+box.TextColor3 = Color3.new(1, 1, 1)
+box.Font = Enum.Font.Gotham
+box.TextSize = 14
+box.ClearTextOnFocus = false
+box.Parent = frame
+Instance.new("UICorner", box).CornerRadius = UDim.new(0, 8)
+local stroke = Instance.new("UIStroke", box)
+stroke.Color = Color3.fromRGB(255, 255, 255)
+stroke.Transparency = 0.5
+
+-- Solid TELEPORT! button
+local button = Instance.new("TextButton")
+button.Size = UDim2.new(1, -20, 0, 36)
+button.Position = UDim2.fromOffset(10, 82)
+button.BackgroundColor3 = Color3.fromRGB(0, 140, 255)
+button.BackgroundTransparency = 0
+button.BorderSizePixel = 0
+button.Text = "TELEPORT!"
+button.TextColor3 = Color3.new(1, 1, 1)
+button.Font = Enum.Font.GothamBold
+button.TextSize = 16
+button.Parent = frame
+Instance.new("UICorner", button).CornerRadius = UDim.new(0, 8)
+
+local function flash(text, color)
+    button.Text = text
+    button.BackgroundColor3 = color
+    task.delay(1.2, function()
+        if button and button.Parent then
+            button.Text = "TELEPORT!"
+            button.BackgroundColor3 = Color3.fromRGB(0, 140, 255)
+        end
+    end)
+end
+
+-- Teleport logic
+button.MouseButton1Click:Connect(function()
+    local nums = {}
+    for n in string.gmatch(box.Text, "-?%d*%.?%d+") do
+        table.insert(nums, tonumber(n))
+    end
+
+    if #nums < 3 then
+        flash("Enter X, Y, Z", Color3.fromRGB(200, 50, 50))
+        return
+    end
+
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then
+        flash("No character", Color3.fromRGB(200, 50, 50))
+        return
+    end
+
+    hrp.CFrame = CFrame.new(nums[1], nums[2], nums[3])
+    flash("Teleported!", Color3.fromRGB(40, 180, 80))
+end)
+
+-- Dragging (drag by the title area / empty frame space)
+local dragging, dragStart, startPos
+frame.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = frame.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        frame.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+        )
+    end
+end)
