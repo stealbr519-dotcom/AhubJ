@@ -8,6 +8,7 @@ local UserInputService = game:GetService("UserInputService")
 local Lighting = game:GetService("Lighting")
 local RunService = game:GetService("RunService")
 local Stats = game:GetService("Stats")
+local HttpService = game:GetService("HttpService")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -31,7 +32,7 @@ gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
 -- ============================================================
--- Config persistence (in-memory + optional executor file IO)
+-- Config persistence
 -- ============================================================
 local CONFIG_STORE = {}
 
@@ -72,6 +73,43 @@ local function tryListFiles()
     end)
     return out
 end
+
+-- ============================================================
+-- FORWARD-DECLARED SHARED STATE
+-- (must come before PLAYER tab so configRefs closures can see them)
+-- ============================================================
+local checkpoints = {}
+local cpCount = 0
+local listFrame          -- will be assigned in TELEPORTER tab
+
+local ESP = {
+    enabled   = false,
+    box       = true,
+    lines     = false,
+    name      = true,
+    dist      = true,
+    usernames = true,
+    chams     = false,
+    glow      = false,
+    chamColor = Color3.fromRGB(0, 255, 100),
+    maxDist   = 1000,
+}
+
+local espObjects = {}
+local espRender, espAdded, espRemoving, espCharacterConn
+
+local noclipEnabled = false
+local noclipConnection = nil
+local originalCanCollide = {}
+
+local flyEnabled = false
+local flyConnection = nil
+local tpwalking = false
+
+local configRefs = {
+    getState = nil,
+    setState = nil,
+}
 
 -- ============================================================
 -- Main window
@@ -212,14 +250,6 @@ local skidPage = makeTab("SKIDFLING")
 local settingsPage = makeTab("SETTINGS")
 
 -- ============================================================
--- Forward-declared state (so Settings can reach into them)
--- ============================================================
-local configRefs = {
-    getState = nil,
-    setState = nil,
-}
-
--- ============================================================
 -- MAIN tab
 -- ============================================================
 do
@@ -262,10 +292,6 @@ end
 -- ============================================================
 -- Shared NOCLIP
 -- ============================================================
-local noclipEnabled = false
-local noclipConnection = nil
-local originalCanCollide = {}
-
 local function toggleNoclip()
     noclipEnabled = not noclipEnabled
 
@@ -339,10 +365,6 @@ end
 -- ============================================================
 -- Shared FLY
 -- ============================================================
-local flyEnabled = false
-local flyConnection = nil
-local tpwalking = false
-
 local function stopFly()
     flyEnabled = false
     tpwalking = false
@@ -513,25 +535,8 @@ local function startFly(getMaxSpeed)
 end
 
 -- ============================================================
--- PLAYER tab (also builds the ESP state machine)
+-- ESP state machine (defined globally so config can reach it)
 -- ============================================================
-local ESP = {
-    enabled   = false,
-    box       = true,
-    lines     = false,
-    name      = true,
-    dist      = true,
-    usernames = true,
-    chams     = false,
-    glow      = false,
-    chamColor = Color3.fromRGB(0, 255, 100),
-    maxDist   = 1000,
-}
-
-local espObjects = {}
-local espRender, espAdded, espRemoving
-local espCharacterConn
-
 local function toHex(c)
     return string.format("%02X%02X%02X",
         math.floor(c.R * 255 + 0.5),
@@ -728,12 +733,10 @@ local function espStart()
         end
     end)
 
-    -- FIX: when the local player respawns, tear down and rebuild ESP so it
-    -- keeps working instead of silently going dead.
     espCharacterConn = LocalPlayer.CharacterAdded:Connect(function()
         task.wait(0.5)
         if not ESP.enabled then return end
-        espStart() -- espStart already guards against double-run
+        espStart()
     end)
 end
 
@@ -749,24 +752,234 @@ local function espStop()
     espObjects = {}
 end
 
--- Restore ESP visuals after a local respawn while enabled
-LocalPlayer.CharacterAdded:Connect(function()
-    if not ESP.enabled then return end
-    task.wait(0.6)
-    if ESP.enabled then
-        for plr, o in pairs(espObjects) do
-            applyVisual(plr)
+-- ============================================================
+-- Checkpoint helpers (so config can rebuild them)
+-- ============================================================
+local function makeCheckpointRow(entryName, pos)
+    if not listFrame then return end
+
+    cpCount += 1
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 34)
+    row.BackgroundColor3 = DARK
+    row.BackgroundTransparency = 0.15
+    row.BorderSizePixel = 0
+    row.LayoutOrder = cpCount
+    row.ZIndex = 4
+    row.Parent = listFrame
+    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
+
+    local nameBox = Instance.new("TextBox")
+    nameBox.Size = UDim2.new(0.4, -4, 1, -8)
+    nameBox.Position = UDim2.fromOffset(6, 4)
+    nameBox.BackgroundColor3 = DARKER
+    nameBox.BackgroundTransparency = 0.15
+    nameBox.BorderSizePixel = 0
+    nameBox.Text = entryName or ("CP #" .. cpCount)
+    nameBox.TextColor3 = LIGHT
+    nameBox.Font = Enum.Font.Gotham
+    nameBox.TextSize = 13
+    nameBox.TextXAlignment = Enum.TextXAlignment.Left
+    nameBox.ClearTextOnFocus = false
+    nameBox.ZIndex = 5
+    nameBox.Parent = row
+    Instance.new("UICorner", nameBox).CornerRadius = UDim.new(0, 6)
+
+    local namePad = Instance.new("UIPadding")
+    namePad.PaddingLeft = UDim.new(0, 6)
+    namePad.PaddingRight = UDim.new(0, 6)
+    namePad.Parent = nameBox
+
+    local tpBtn = Instance.new("TextButton")
+    tpBtn.Size = UDim2.new(0.28, 0, 1, -8)
+    tpBtn.Position = UDim2.new(0.42, 0, 0, 4)
+    tpBtn.BackgroundColor3 = BLUE
+    tpBtn.BorderSizePixel = 0
+    tpBtn.Text = "TP"
+    tpBtn.TextColor3 = WHITE
+    tpBtn.Font = Enum.Font.GothamBold
+    tpBtn.TextSize = 13
+    tpBtn.ZIndex = 5
+    tpBtn.Parent = row
+    Instance.new("UICorner", tpBtn).CornerRadius = UDim.new(0, 6)
+
+    local delBtn = Instance.new("TextButton")
+    delBtn.Size = UDim2.new(0.28, 0, 1, -8)
+    delBtn.Position = UDim2.new(0.72, 0, 0, 4)
+    delBtn.BackgroundColor3 = RED
+    delBtn.BorderSizePixel = 0
+    delBtn.Text = "DEL"
+    delBtn.TextColor3 = WHITE
+    delBtn.Font = Enum.Font.GothamBold
+    delBtn.TextSize = 13
+    delBtn.ZIndex = 5
+    delBtn.Parent = row
+    Instance.new("UICorner", delBtn).CornerRadius = UDim.new(0, 6)
+
+    local ref = { pos = pos, row = row, name = nameBox.Text }
+    table.insert(checkpoints, ref)
+
+    nameBox:GetPropertyChangedSignal("Text"):Connect(function()
+        ref.name = nameBox.Text
+    end)
+
+    tpBtn.MouseButton1Click:Connect(function()
+        local c = LocalPlayer.Character
+        local h = c and c:FindFirstChild("HumanoidRootPart")
+        if h then h.CFrame = pos end
+    end)
+
+    delBtn.MouseButton1Click:Connect(function()
+        for i, e in ipairs(checkpoints) do
+            if e.row == row then
+                table.remove(checkpoints, i)
+                break
+            end
+        end
+        row:Destroy()
+        cpCount -= 1
+    end)
+
+    return ref
+end
+
+-- ============================================================
+-- configRefs closures — getState/setState
+-- (these now see `checkpoints`, `cpCount`, `listFrame`, ESP etc.
+--  because they are declared at the top of the file)
+-- ============================================================
+do
+    configRefs.getState = function()
+        local state = {
+            walkSpeed = 16,
+            jumpPower = 50,
+            flySpeed  = 50,
+
+            espEnabled   = ESP.enabled,
+            espBox       = ESP.box,
+            espLines     = ESP.lines,
+            espName      = ESP.name,
+            espDist      = ESP.dist,
+            espUsernames = ESP.usernames,
+            espChams     = ESP.chams,
+            espGlow      = ESP.glow,
+            espChamColor = toHex(ESP.chamColor),
+            espMaxDist   = ESP.maxDist,
+
+            noclip = noclipEnabled,
+
+            checkpoints = {},
+        }
+
+        -- Read current UI box values if accessible (stored on the page)
+        if playerPage and playerPage:FindFirstChild("WalkSpeedBox") then
+            state.walkSpeed = playerPage.WalkSpeedBox.Text
+        end
+        if playerPage and playerPage:FindFirstChild("JumpPowerBox") then
+            state.jumpPower = playerPage.JumpPowerBox.Text
+        end
+        if playerPage and playerPage:FindFirstChild("FlySpeedBox") then
+            state.flySpeed = playerPage.FlySpeedBox.Text
+        end
+
+        for _, e in ipairs(checkpoints) do
+            table.insert(state.checkpoints, {
+                name = e.name,
+                cf = { e.pos.X, e.pos.Y, e.pos.Z,
+                       e.pos:ToEulerAnglesXYZ() },
+            })
+        end
+
+        return state
+    end
+
+    configRefs.setState = function(data)
+        if type(data) ~= "table" then return end
+
+        -- Update UI textboxes if present
+        if playerPage then
+            if data.walkSpeed and playerPage:FindFirstChild("WalkSpeedBox") then
+                playerPage.WalkSpeedBox.Text = tostring(data.walkSpeed)
+            end
+            if data.jumpPower and playerPage:FindFirstChild("JumpPowerBox") then
+                playerPage.JumpPowerBox.Text = tostring(data.jumpPower)
+            end
+            if data.flySpeed and playerPage:FindFirstChild("FlySpeedBox") then
+                playerPage.FlySpeedBox.Text = tostring(data.flySpeed)
+            end
+        end
+
+        -- Apply walk/jump immediately
+        local char = LocalPlayer.Character
+        local h = char and char:FindFirstChildOfClass("Humanoid")
+        if h then
+            if tonumber(data.walkSpeed) then h.WalkSpeed = tonumber(data.walkSpeed) end
+            if tonumber(data.jumpPower) then
+                h.UseJumpPower = true
+                h.JumpPower = tonumber(data.jumpPower)
+            end
+        end
+
+        -- ESP flags
+        if data.espBox       ~= nil then ESP.box       = data.espBox       end
+        if data.espLines     ~= nil then ESP.lines     = data.espLines     end
+        if data.espName      ~= nil then ESP.name      = data.espName      end
+        if data.espDist      ~= nil then ESP.dist      = data.espDist      end
+        if data.espUsernames ~= nil then ESP.usernames = data.espUsernames end
+        if data.espChams     ~= nil then ESP.chams     = data.espChams     end
+        if data.espGlow      ~= nil then ESP.glow      = data.espGlow      end
+        if data.espMaxDist   ~= nil then ESP.maxDist   = data.espMaxDist   end
+
+        if data.espChamColor then
+            local c = parseHex(data.espChamColor)
+            if c then ESP.chamColor = c end
+        end
+
+        -- ESP enable/disable
+        if data.espEnabled ~= nil then
+            if data.espEnabled and not ESP.enabled then
+                espStart()
+            elseif not data.espEnabled and ESP.enabled then
+                espStop()
+            end
+        end
+
+        -- Noclip
+        if data.noclip ~= nil and data.noclip ~= noclipEnabled then
+            toggleNoclip()
+        end
+
+        -- Checkpoints
+        if type(data.checkpoints) == "table" then
+            for i = #checkpoints, 1, -1 do
+                if checkpoints[i] and checkpoints[i].row then
+                    checkpoints[i].row:Destroy()
+                end
+                table.remove(checkpoints, i)
+            end
+            cpCount = 0
+
+            for _, entry in ipairs(data.checkpoints) do
+                if entry.cf then
+                    local pos = CFrame.new(entry.cf[1], entry.cf[2], entry.cf[3])
+                        * CFrame.Angles(entry.cf[4] or 0, entry.cf[5] or 0, entry.cf[6] or 0)
+                    makeCheckpointRow(entry.name, pos)
+                end
+            end
         end
     end
-end)
+end
 
+-- ============================================================
+-- PLAYER tab
+-- ============================================================
 do
     local function getHum()
         local char = LocalPlayer.Character
         return char and char:FindFirstChildOfClass("Humanoid")
     end
 
-    local function makeInputRow(labelText, defaultText, applyFn)
+    local function makeInputRow(labelText, defaultText, applyFn, boxName)
         local row = Instance.new("Frame")
         row.Size = UDim2.new(1, 0, 0, 34)
         row.BackgroundTransparency = 1
@@ -785,6 +998,7 @@ do
         lbl.Parent = row
 
         local box = Instance.new("TextBox")
+        box.Name = boxName or (labelText .. "Box")
         box.Size = UDim2.new(0.5, -4, 1, 0)
         box.Position = UDim2.new(0.5, 4, 0, 0)
         box.BackgroundColor3 = DARK
@@ -807,19 +1021,17 @@ do
         return box
     end
 
-    local walkSpeedBox = makeInputRow("WalkSpeed", "16", function(n)
+    makeInputRow("WalkSpeed", "16", function(n)
         local h = getHum() if h then h.WalkSpeed = n end
-    end)
+    end, "WalkSpeedBox")
 
-    local jumpPowerBox = makeInputRow("JumpPower", "50", function(n)
+    makeInputRow("JumpPower", "50", function(n)
         local h = getHum() if h then h.UseJumpPower = true h.JumpPower = n end
-    end)
+    end, "JumpPowerBox")
 
-    local flySpeedBox = makeInputRow("Fly Speed", "50", function() end)
+    makeInputRow("Fly Speed", "50", function() end, "FlySpeedBox")
 
-    -- ========================================================
     -- Teleport to User
-    -- ========================================================
     local tpRow = Instance.new("Frame")
     tpRow.Size = UDim2.new(1, 0, 0, 34)
     tpRow.BackgroundTransparency = 1
@@ -875,7 +1087,6 @@ do
                 end
             end
         end
-
         if target then
             local char = LocalPlayer.Character
             local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -887,9 +1098,7 @@ do
         end
     end)
 
-    -- ========================================================
-    -- FLY toggle
-    -- ========================================================
+    -- FLY
     local flyBtn = Instance.new("TextButton")
     flyBtn.Size = UDim2.new(1, 0, 0, 34)
     flyBtn.BackgroundColor3 = BLUE
@@ -908,17 +1117,16 @@ do
             flyBtn.Text = "FLY: OFF"
             flyBtn.BackgroundColor3 = BLUE
         else
+            local fbox = playerPage:FindFirstChild("FlySpeedBox")
             startFly(function()
-                return tonumber(flySpeedBox.Text) or 50
+                return fbox and tonumber(fbox.Text) or 50
             end)
             flyBtn.Text = "FLY: ON"
             flyBtn.BackgroundColor3 = GREEN
         end
     end)
 
-    -- ========================================================
     -- NOCLIP
-    -- ========================================================
     local noclipBtn = Instance.new("TextButton")
     noclipBtn.Size = UDim2.new(1, 0, 0, 34)
     noclipBtn.BackgroundColor3 = BLUE
@@ -937,9 +1145,7 @@ do
         noclipBtn.BackgroundColor3 = noclipEnabled and GREEN or BLUE
     end)
 
-    -- ========================================================
     -- ESP UI
-    -- ========================================================
     local function makeRow()
         local r = Instance.new("Frame")
         r.Size = UDim2.new(1, 0, 0, 30)
@@ -1097,203 +1303,56 @@ do
         end)
     end
 
-    -- ========================================================
-    -- Config capture/restore (used by Settings tab)
-    -- ========================================================
-    configRefs.getState = function()
-        local char = LocalPlayer.Character
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
-
-        return {
-            walkSpeed = walkSpeedBox.Text,
-            jumpPower = jumpPowerBox.Text,
-            flySpeed  = flySpeedBox.Text,
-
-            espEnabled   = ESP.enabled,
-            espBox       = ESP.box,
-            espLines     = ESP.lines,
-            espName      = ESP.name,
-            espDist      = ESP.dist,
-            espUsernames = ESP.usernames,
-            espChams     = ESP.chams,
-            espGlow      = ESP.glow,
-            espChamColor = toHex(ESP.chamColor),
-            espMaxDist   = ESP.maxDist,
-
-            noclip = noclipEnabled,
-
-            checkpoints = (function()
-                local out = {}
-                for _, e in ipairs(checkpoints) do
-                    table.insert(out, {
-                        name = e.name,
-                        cf = {
-                            e.pos.X, e.pos.Y, e.pos.Z,
-                            e.pos:ToEulerAnglesXYZ()
-                        }
-                    })
-                end
-                return out
-            end)(),
-        }
+    local function setLighting(name)
+        if name == "Day" then
+            Lighting.ClockTime = 14 Lighting.Brightness = 2
+            Lighting.FogEnd = 100000
+            Lighting.Ambient = Color3.fromRGB(70, 70, 70)
+        elseif name == "Night" then
+            Lighting.ClockTime = 0 Lighting.Brightness = 1
+            Lighting.FogEnd = 100000
+            Lighting.Ambient = Color3.fromRGB(20, 20, 30)
+        elseif name == "Rainy" then
+            Lighting.ClockTime = 14 Lighting.Brightness = 1.2
+            Lighting.FogEnd = 300
+            Lighting.FogColor = Color3.fromRGB(120, 120, 130)
+            Lighting.Ambient = Color3.fromRGB(50, 50, 55)
+        elseif name == "Foggy" then
+            Lighting.ClockTime = 14 Lighting.Brightness = 1.2
+            Lighting.FogEnd = 80
+            Lighting.FogColor = Color3.fromRGB(200, 200, 200)
+        end
     end
 
-    configRefs.setState = function(data)
-        if type(data) ~= "table" then return end
+    local presetsRow = Instance.new("Frame")
+    presetsRow.Size = UDim2.new(1, 0, 0, 30)
+    presetsRow.BackgroundTransparency = 1
+    presetsRow.ZIndex = 4
+    presetsRow.Parent = playerPage
+    local pl = Instance.new("UIListLayout")
+    pl.FillDirection = Enum.FillDirection.Horizontal
+    pl.Padding = UDim.new(0, 6)
+    pl.Parent = presetsRow
 
-        -- Scalar boxes
-        if data.walkSpeed then walkSpeedBox.Text = tostring(data.walkSpeed) end
-        if data.jumpPower then jumpPowerBox.Text = tostring(data.jumpPower) end
-        if data.flySpeed  then flySpeedBox.Text  = tostring(data.flySpeed)  end
-
-        -- Apply walk/jump immediately
-        local h = getHum()
-        if h then
-            if tonumber(data.walkSpeed) then h.WalkSpeed = tonumber(data.walkSpeed) end
-            if tonumber(data.jumpPower) then
-                h.UseJumpPower = true
-                h.JumpPower = tonumber(data.jumpPower)
-            end
-        end
-
-        -- ESP flags
-        if data.espBox       ~= nil then ESP.box       = data.espBox       end
-        if data.espLines     ~= nil then ESP.lines     = data.espLines     end
-        if data.espName      ~= nil then ESP.name      = data.espName      end
-        if data.espDist      ~= nil then ESP.dist      = data.espDist      end
-        if data.espUsernames ~= nil then ESP.usernames = data.espUsernames end
-        if data.espChams     ~= nil then ESP.chams     = data.espChams     end
-        if data.espGlow      ~= nil then ESP.glow      = data.espGlow      end
-        if data.espMaxDist   ~= nil then ESP.maxDist   = data.espMaxDist   end
-
-        if data.espChamColor then
-            local c = parseHex(data.espChamColor)
-            if c then ESP.chamColor = c end
-        end
-
-        -- ESP enable/disable after flags
-        if data.espEnabled ~= nil then
-            if data.espEnabled and not ESP.enabled then
-                espStart()
-            elseif not data.espEnabled and ESP.enabled then
-                espStop()
-            end
-        end
-
-        -- Noclip
-        if data.noclip ~= nil and data.noclip ~= noclipEnabled then
-            toggleNoclip()
-        end
-
-        -- Checkpoints: clear and rebuild
-        if type(data.checkpoints) == "table" then
-            for i = #checkpoints, 1, -1 do
-                if checkpoints[i] and checkpoints[i].row then
-                    checkpoints[i].row:Destroy()
-                end
-                table.remove(checkpoints, i)
-            end
-            cpCount = 0
-
-            for _, entry in ipairs(data.checkpoints) do
-                if entry.cf then
-                    cpCount += 1
-                    local pos = CFrame.new(entry.cf[1], entry.cf[2], entry.cf[3])
-                        * CFrame.Angles(entry.cf[4] or 0, entry.cf[5] or 0, entry.cf[6] or 0)
-
-                    local row = Instance.new("Frame")
-                    row.Size = UDim2.new(1, 0, 0, 34)
-                    row.BackgroundColor3 = DARK
-                    row.BackgroundTransparency = 0.15
-                    row.BorderSizePixel = 0
-                    row.LayoutOrder = cpCount
-                    row.ZIndex = 4
-                    row.Parent = listFrame
-                    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
-
-                    local nameBox = Instance.new("TextBox")
-                    nameBox.Size = UDim2.new(0.4, -4, 1, -8)
-                    nameBox.Position = UDim2.fromOffset(6, 4)
-                    nameBox.BackgroundColor3 = DARKER
-                    nameBox.BackgroundTransparency = 0.15
-                    nameBox.BorderSizePixel = 0
-                    nameBox.Text = entry.name or ("CP #" .. cpCount)
-                    nameBox.TextColor3 = LIGHT
-                    nameBox.Font = Enum.Font.Gotham
-                    nameBox.TextSize = 13
-                    nameBox.TextXAlignment = Enum.TextXAlignment.Left
-                    nameBox.ClearTextOnFocus = false
-                    nameBox.ZIndex = 5
-                    nameBox.Parent = row
-                    Instance.new("UICorner", nameBox).CornerRadius = UDim.new(0, 6)
-
-                    local namePad = Instance.new("UIPadding")
-                    namePad.PaddingLeft = UDim.new(0, 6)
-                    namePad.PaddingRight = UDim.new(0, 6)
-                    namePad.Parent = nameBox
-
-                    local tpBtn = Instance.new("TextButton")
-                    tpBtn.Size = UDim2.new(0.28, 0, 1, -8)
-                    tpBtn.Position = UDim2.new(0.42, 0, 0, 4)
-                    tpBtn.BackgroundColor3 = BLUE
-                    tpBtn.BorderSizePixel = 0
-                    tpBtn.Text = "TP"
-                    tpBtn.TextColor3 = WHITE
-                    tpBtn.Font = Enum.Font.GothamBold
-                    tpBtn.TextSize = 13
-                    tpBtn.ZIndex = 5
-                    tpBtn.Parent = row
-                    Instance.new("UICorner", tpBtn).CornerRadius = UDim.new(0, 6)
-
-                    local delBtn = Instance.new("TextButton")
-                    delBtn.Size = UDim2.new(0.28, 0, 1, -8)
-                    delBtn.Position = UDim2.new(0.72, 0, 0, 4)
-                    delBtn.BackgroundColor3 = RED
-                    delBtn.BorderSizePixel = 0
-                    delBtn.Text = "DEL"
-                    delBtn.TextColor3 = WHITE
-                    delBtn.Font = Enum.Font.GothamBold
-                    delBtn.TextSize = 13
-                    delBtn.ZIndex = 5
-                    delBtn.Parent = row
-                    Instance.new("UICorner", delBtn).CornerRadius = UDim.new(0, 6)
-
-                    local ref = { pos = pos, row = row, name = nameBox.Text }
-                    table.insert(checkpoints, ref)
-
-                    nameBox:GetPropertyChangedSignal("Text"):Connect(function()
-                        ref.name = nameBox.Text
-                    end)
-
-                    tpBtn.MouseButton1Click:Connect(function()
-                        local c = LocalPlayer.Character
-                        local h2 = c and c:FindFirstChild("HumanoidRootPart")
-                        if h2 then h2.CFrame = pos end
-                    end)
-
-                    delBtn.MouseButton1Click:Connect(function()
-                        for i, e in ipairs(checkpoints) do
-                            if e.row == row then
-                                table.remove(checkpoints, i)
-                                break
-                            end
-                        end
-                        row:Destroy()
-                        cpCount -= 1
-                    end)
-                end
-            end
-        end
+    for _, name in ipairs({"Day", "Night", "Rainy", "Foggy"}) do
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(0.25, -5, 1, 0)
+        b.BackgroundColor3 = PURPLE
+        b.BorderSizePixel = 0
+        b.Text = name
+        b.TextColor3 = WHITE
+        b.Font = Enum.Font.GothamBold
+        b.TextSize = 12
+        b.ZIndex = 4
+        b.Parent = presetsRow
+        Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+        b.MouseButton1Click:Connect(function() setLighting(name) end)
     end
 end
 
 -- ============================================================
 -- TELEPORTER tab
 -- ============================================================
-local checkpoints = {}
-local cpCount = 0
-local listFrame
-
 do
     listFrame = Instance.new("Frame")
     listFrame.Size = UDim2.new(1, 0, 0, 0)
@@ -1331,108 +1390,13 @@ do
         end)
     end
 
-    local function addCheckpoint()
+    cpButton.MouseButton1Click:Connect(function()
         local char = LocalPlayer.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
         if not hrp then return end
-
-        cpCount += 1
-        local pos = hrp.CFrame
-        local defaultName = "CP #" .. cpCount
-
-        local row = Instance.new("Frame")
-        row.Size = UDim2.new(1, 0, 0, 34)
-        row.BackgroundColor3 = DARK
-        row.BackgroundTransparency = 0.15
-        row.BorderSizePixel = 0
-        row.LayoutOrder = cpCount
-        row.ZIndex = 4
-        row.Parent = listFrame
-        Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
-
-        local nameBox = Instance.new("TextBox")
-        nameBox.Size = UDim2.new(0.4, -4, 1, -8)
-        nameBox.Position = UDim2.fromOffset(6, 4)
-        nameBox.BackgroundColor3 = DARKER
-        nameBox.BackgroundTransparency = 0.15
-        nameBox.BorderSizePixel = 0
-        nameBox.Text = defaultName
-        nameBox.TextColor3 = LIGHT
-        nameBox.Font = Enum.Font.Gotham
-        nameBox.TextSize = 13
-        nameBox.TextXAlignment = Enum.TextXAlignment.Left
-        nameBox.ClearTextOnFocus = false
-        nameBox.PlaceholderText = "Name..."
-        nameBox.ZIndex = 5
-        nameBox.Parent = row
-        Instance.new("UICorner", nameBox).CornerRadius = UDim.new(0, 6)
-
-        local namePad = Instance.new("UIPadding")
-        namePad.PaddingLeft = UDim.new(0, 6)
-        namePad.PaddingRight = UDim.new(0, 6)
-        namePad.Parent = nameBox
-
-        local tpBtn = Instance.new("TextButton")
-        tpBtn.Size = UDim2.new(0.28, 0, 1, -8)
-        tpBtn.Position = UDim2.new(0.42, 0, 0, 4)
-        tpBtn.BackgroundColor3 = BLUE
-        tpBtn.BorderSizePixel = 0
-        tpBtn.Text = "TP"
-        tpBtn.TextColor3 = WHITE
-        tpBtn.Font = Enum.Font.GothamBold
-        tpBtn.TextSize = 13
-        tpBtn.ZIndex = 5
-        tpBtn.Parent = row
-        Instance.new("UICorner", tpBtn).CornerRadius = UDim.new(0, 6)
-
-        local delBtn = Instance.new("TextButton")
-        delBtn.Size = UDim2.new(0.28, 0, 1, -8)
-        delBtn.Position = UDim2.new(0.72, 0, 0, 4)
-        delBtn.BackgroundColor3 = RED
-        delBtn.BorderSizePixel = 0
-        delBtn.Text = "DEL"
-        delBtn.TextColor3 = WHITE
-        delBtn.Font = Enum.Font.GothamBold
-        delBtn.TextSize = 13
-        delBtn.ZIndex = 5
-        delBtn.Parent = row
-        Instance.new("UICorner", delBtn).CornerRadius = UDim.new(0, 6)
-
-        local entry = { pos = pos, row = row, name = defaultName }
-        table.insert(checkpoints, entry)
-
-        nameBox:GetPropertyChangedSignal("Text"):Connect(function()
-            entry.name = nameBox.Text
-        end)
-
-        nameBox.FocusLost:Connect(function()
-            if nameBox.Text == "" then
-                nameBox.Text = "CP #" .. cpCount
-                entry.name = nameBox.Text
-            end
-        end)
-
-        tpBtn.MouseButton1Click:Connect(function()
-            local c = LocalPlayer.Character
-            local h = c and c:FindFirstChild("HumanoidRootPart")
-            if h then h.CFrame = pos end
-        end)
-
-        delBtn.MouseButton1Click:Connect(function()
-            for i, e in ipairs(checkpoints) do
-                if e.row == row then
-                    table.remove(checkpoints, i)
-                    break
-                end
-            end
-            row:Destroy()
-            cpCount -= 1
-        end)
-
+        makeCheckpointRow("CP #" .. (cpCount + 1), hrp.CFrame)
         flash(cpButton, "Saved!", BLUE, "MAKE CHECKPOINT", GREEN)
-    end
-
-    cpButton.MouseButton1Click:Connect(addCheckpoint)
+    end)
 end
 
 -- ============================================================
@@ -1702,7 +1666,7 @@ do
 end
 
 -- ============================================================
--- SETTINGS tab — save / load configs
+-- SETTINGS tab
 -- ============================================================
 do
     local header = Instance.new("TextLabel")
@@ -1716,7 +1680,6 @@ do
     header.ZIndex = 4
     header.Parent = settingsPage
 
-    -- Name input + Save button
     local saveRow = Instance.new("Frame")
     saveRow.Size = UDim2.new(1, 0, 0, 34)
     saveRow.BackgroundTransparency = 1
@@ -1754,7 +1717,6 @@ do
     saveBtn.Parent = saveRow
     Instance.new("UICorner", saveBtn).CornerRadius = UDim.new(0, 6)
 
-    -- Load: dropdown + Load button
     local loadRow = Instance.new("Frame")
     loadRow.Size = UDim2.new(1, 0, 0, 34)
     loadRow.BackgroundTransparency = 1
@@ -1793,7 +1755,6 @@ do
 
     local selectedConfig = nil
 
-    -- Dropdown options panel
     local optionsFrame = Instance.new("Frame")
     optionsFrame.Size = UDim2.new(0.65, -3, 0, 140)
     optionsFrame.Position = UDim2.new(0, 0, 0, 0)
@@ -1819,7 +1780,7 @@ do
 
     local function refreshOptions()
         for _, c in ipairs(optionsFrame:GetChildren()) do
-            if c:IsA("TextButton") then c:Destroy() end
+            if c:IsA("TextButton") or c:IsA("TextLabel") then c:Destroy() end
         end
 
         local names = tryListFiles()
@@ -1877,14 +1838,16 @@ do
         end
 
         local data = configRefs.getState and configRefs.getState() or nil
-        if not data then return end
+        if not data then
+            saveBtn.Text = "FAILED"
+            task.delay(1, function() saveBtn.Text = "SAVE CONFIG" end)
+            return
+        end
 
         CONFIG_STORE[name] = deepCopy(data)
 
         local ok, encoded = pcall(function()
-            if HttpService then
-                return HttpService:JSONEncode(data)
-            end
+            return HttpService:JSONEncode(data)
         end)
         if ok and encoded then
             tryWriteFile(name, encoded)
@@ -1908,9 +1871,7 @@ do
             local raw = tryReadFile(selectedConfig)
             if raw then
                 local ok, decoded = pcall(function()
-                    if HttpService then
-                        return HttpService:JSONDecode(raw)
-                    end
+                    return HttpService:JSONDecode(raw)
                 end)
                 if ok and type(decoded) == "table" then
                     data = decoded
@@ -1933,7 +1894,6 @@ do
         task.delay(1, function() loadBtn.Text = "LOAD CONFIG" end)
     end)
 
-    -- Hide dropdown if the user clicks elsewhere
     UserInputService.InputBegan:Connect(function(input, processed)
         if processed then return end
         if input.UserInputType == Enum.UserInputType.MouseButton1
