@@ -1880,6 +1880,264 @@ do
             end
         end
 
+-- ============================================================
+-- SETTINGS tab
+-- ============================================================
+do
+    -- Persistent store: survives re-execution within the same executor session
+    getgenv().AhubJ_CONFIG_STORE = getgenv().AhubJ_CONFIG_STORE or CONFIG_STORE
+    CONFIG_STORE = getgenv().AhubJ_CONFIG_STORE
+
+    -- Optional: auto-load any configs from disk on script start
+    for _, name in ipairs(tryListFiles()) do
+        if not CONFIG_STORE[name] then
+            local raw = tryReadFile(name)
+            if raw then
+                local ok, decoded = pcall(function() return HttpService:JSONDecode(raw) end)
+                if ok and type(decoded) == "table" then
+                    CONFIG_STORE[name] = decoded
+                end
+            end
+        end
+    end
+
+    local header = Instance.new("TextLabel")
+    header.Size = UDim2.new(1, 0, 0, 28)
+    header.BackgroundTransparency = 1
+    header.Text = "CONFIG"
+    header.TextColor3 = LIGHT
+    header.Font = Enum.Font.GothamBold
+    header.TextSize = 16
+    header.TextXAlignment = Enum.TextXAlignment.Left
+    header.ZIndex = 4
+    header.Parent = settingsPage
+
+    -- Save row
+    local saveRow = Instance.new("Frame")
+    saveRow.Size = UDim2.new(1, 0, 0, 34)
+    saveRow.BackgroundTransparency = 1
+    saveRow.ZIndex = 4
+    saveRow.Parent = settingsPage
+    local saveLayout = Instance.new("UIListLayout")
+    saveLayout.FillDirection = Enum.FillDirection.Horizontal
+    saveLayout.Padding = UDim.new(0, 6)
+    saveLayout.Parent = saveRow
+
+    local nameInput = Instance.new("TextBox")
+    nameInput.Size = UDim2.new(0.65, -3, 1, 0)
+    nameInput.BackgroundColor3 = DARK
+    nameInput.BackgroundTransparency = 0.15
+    nameInput.BorderSizePixel = 0
+    nameInput.Text = ""
+    nameInput.PlaceholderText = "Config name..."
+    nameInput.TextColor3 = LIGHT
+    nameInput.Font = Enum.Font.Gotham
+    nameInput.TextSize = 14
+    nameInput.ClearTextOnFocus = false
+    nameInput.ZIndex = 4
+    nameInput.Parent = saveRow
+    Instance.new("UICorner", nameInput).CornerRadius = UDim.new(0, 6)
+
+    local saveBtn = Instance.new("TextButton")
+    saveBtn.Size = UDim2.new(0.35, -3, 1, 0)
+    saveBtn.BackgroundColor3 = GREEN
+    saveBtn.BorderSizePixel = 0
+    saveBtn.Text = "SAVE CONFIG"
+    saveBtn.TextColor3 = WHITE
+    saveBtn.Font = Enum.Font.GothamBold
+    saveBtn.TextSize = 13
+    saveBtn.ZIndex = 4
+    saveBtn.Parent = saveRow
+    Instance.new("UICorner", saveBtn).CornerRadius = UDim.new(0, 6)
+
+    -- Load row
+    local loadRow = Instance.new("Frame")
+    loadRow.Size = UDim2.new(1, 0, 0, 34)
+    loadRow.BackgroundTransparency = 1
+    loadRow.ZIndex = 4
+    loadRow.Parent = settingsPage
+    local loadLayout = Instance.new("UIListLayout")
+    loadLayout.FillDirection = Enum.FillDirection.Horizontal
+    loadLayout.Padding = UDim.new(0, 6)
+    loadLayout.Parent = loadRow
+
+    local dropdownBtn = Instance.new("TextButton")
+    dropdownBtn.Size = UDim2.new(0.65, -3, 1, 0)
+    dropdownBtn.BackgroundColor3 = DARK
+    dropdownBtn.BackgroundTransparency = 0.15
+    dropdownBtn.BorderSizePixel = 0
+    dropdownBtn.Text = "Select config..."
+    dropdownBtn.TextColor3 = LIGHT
+    dropdownBtn.Font = Enum.Font.Gotham
+    dropdownBtn.TextSize = 13
+    dropdownBtn.TextXAlignment = Enum.TextXAlignment.Left
+    dropdownBtn.ZIndex = 4
+    dropdownBtn.Parent = loadRow
+    Instance.new("UICorner", dropdownBtn).CornerRadius = UDim.new(0, 6)
+
+    local loadBtn = Instance.new("TextButton")
+    loadBtn.Size = UDim2.new(0.35, -3, 1, 0)
+    loadBtn.BackgroundColor3 = BLUE
+    loadBtn.BorderSizePixel = 0
+    loadBtn.Text = "LOAD CONFIG"
+    loadBtn.TextColor3 = WHITE
+    loadBtn.Font = Enum.Font.GothamBold
+    loadBtn.TextSize = 13
+    loadBtn.ZIndex = 4
+    loadBtn.Parent = loadRow
+    Instance.new("UICorner", loadBtn).CornerRadius = UDim.new(0, 6)
+
+    -- Delete row (new — lets you clean up saved configs)
+    local delRow = Instance.new("Frame")
+    delRow.Size = UDim2.new(1, 0, 0, 30)
+    delRow.BackgroundTransparency = 1
+    delRow.ZIndex = 4
+    delRow.Parent = settingsPage
+
+    local delBtn = Instance.new("TextButton")
+    delBtn.Size = UDim2.new(1, 0, 1, 0)
+    delBtn.BackgroundColor3 = RED
+    delBtn.BorderSizePixel = 0
+    delBtn.Text = "DELETE SELECTED CONFIG"
+    delBtn.TextColor3 = WHITE
+    delBtn.Font = Enum.Font.GothamBold
+    delBtn.TextSize = 13
+    delBtn.ZIndex = 4
+    delBtn.Parent = delRow
+    Instance.new("UICorner", delBtn).CornerRadius = UDim.new(0, 6)
+
+    local selectedConfig = nil
+
+    -- Dropdown panel
+    local optionsFrame = Instance.new("Frame")
+    optionsFrame.Size = UDim2.new(0.65, -3, 0, 140)
+    optionsFrame.Position = UDim2.new(0, 0, 0, 0)
+    optionsFrame.BackgroundColor3 = DARKER
+    optionsFrame.BackgroundTransparency = 0.05
+    optionsFrame.BorderSizePixel = 0
+    optionsFrame.Visible = false
+    optionsFrame.ZIndex = 20
+    optionsFrame.Parent = settingsPage
+    Instance.new("UICorner", optionsFrame).CornerRadius = UDim.new(0, 6)
+
+    local optionsLayout = Instance.new("UIListLayout")
+    optionsLayout.FillDirection = Enum.FillDirection.Vertical
+    optionsLayout.Padding = UDim.new(0, 3)
+    optionsLayout.Parent = optionsFrame
+
+    local optionsPad = Instance.new("UIPadding")
+    optionsPad.PaddingTop = UDim.new(0, 6)
+    optionsPad.PaddingBottom = UDim.new(0, 6)
+    optionsPad.PaddingLeft = UDim.new(0, 6)
+    optionsPad.PaddingRight = UDim.new(0, 6)
+    optionsPad.Parent = optionsFrame
+
+    local function refreshOptions()
+        for _, c in ipairs(optionsFrame:GetChildren()) do
+            if c:IsA("TextButton") or c:IsA("TextLabel") then c:Destroy() end
+        end
+
+        local names = tryListFiles()
+        for name in pairs(CONFIG_STORE) do
+            if not table.find(names, name) then table.insert(names, name) end
+        end
+
+        if #names == 0 then
+            local e = Instance.new("TextLabel")
+            e.Size = UDim2.new(1, 0, 0, 24)
+            e.BackgroundTransparency = 1
+            e.Text = "(no saved configs)"
+            e.TextColor3 = Color3.fromRGB(160, 160, 170)
+            e.Font = Enum.Font.Gotham
+            e.TextSize = 12
+            e.ZIndex = 21
+            e.Parent = optionsFrame
+            return
+        end
+
+        table.sort(names)
+        for _, name in ipairs(names) do
+            local opt = Instance.new("TextButton")
+            opt.Size = UDim2.new(1, 0, 0, 26)
+            opt.BackgroundColor3 = DARK
+            opt.BackgroundTransparency = 0.15
+            opt.BorderSizePixel = 0
+            opt.Text = name
+            opt.TextColor3 = LIGHT
+            opt.Font = Enum.Font.Gotham
+            opt.TextSize = 13
+            opt.TextXAlignment = Enum.TextXAlignment.Left
+            opt.ZIndex = 21
+            opt.Parent = optionsFrame
+            Instance.new("UICorner", opt).CornerRadius = UDim.new(0, 4)
+
+            opt.MouseButton1Click:Connect(function()
+                selectedConfig = name
+                dropdownBtn.Text = name
+                optionsFrame.Visible = false
+            end)
+        end
+    end
+
+    dropdownBtn.MouseButton1Click:Connect(function()
+        refreshOptions()
+        optionsFrame.Visible = not optionsFrame.Visible
+    end)
+
+    -- SAVE
+    saveBtn.MouseButton1Click:Connect(function()
+        local name = nameInput.Text
+        if name == "" then
+            name = "default"
+            nameInput.Text = name
+        end
+
+        local data = configRefs.getState and configRefs.getState() or nil
+        if not data then
+            saveBtn.Text = "FAILED"
+            task.delay(1, function() saveBtn.Text = "SAVE CONFIG" end)
+            return
+        end
+
+        CONFIG_STORE[name] = deepCopy(data)
+        getgenv().AhubJ_CONFIG_STORE = CONFIG_STORE
+
+        local ok, encoded = pcall(function()
+            return HttpService:JSONEncode(data)
+        end)
+        if ok and encoded then
+            tryWriteFile(name, encoded)
+        end
+
+        saveBtn.Text = "SAVED!"
+        task.delay(1, function() saveBtn.Text = "SAVE CONFIG" end)
+
+        refreshOptions()
+    end)
+
+    -- LOAD
+    loadBtn.MouseButton1Click:Connect(function()
+        if not selectedConfig then
+            loadBtn.Text = "PICK FIRST"
+            task.delay(1, function() loadBtn.Text = "LOAD CONFIG" end)
+            return
+        end
+
+        local data = CONFIG_STORE[selectedConfig]
+        if not data then
+            local raw = tryReadFile(selectedConfig)
+            if raw then
+                local ok, decoded = pcall(function()
+                    return HttpService:JSONDecode(raw)
+                end)
+                if ok and type(decoded) == "table" then
+                    data = decoded
+                    CONFIG_STORE[selectedConfig] = data
+                    getgenv().AhubJ_CONFIG_STORE = CONFIG_STORE
+                end
+            end
+        end
+
         if not data then
             loadBtn.Text = "NOT FOUND"
             task.delay(1, function() loadBtn.Text = "LOAD CONFIG" end)
@@ -1894,6 +2152,33 @@ do
         task.delay(1, function() loadBtn.Text = "LOAD CONFIG" end)
     end)
 
+    -- DELETE
+    delBtn.MouseButton1Click:Connect(function()
+        if not selectedConfig then
+            delBtn.Text = "PICK ONE FIRST"
+            task.delay(1, function() delBtn.Text = "DELETE SELECTED CONFIG" end)
+            return
+        end
+
+        CONFIG_STORE[selectedConfig] = nil
+        getgenv().AhubJ_CONFIG_STORE = CONFIG_STORE
+
+        pcall(function()
+            if delfile then
+                delfile("AhubJ_" .. selectedConfig .. ".json")
+            end
+        end)
+
+        selectedConfig = nil
+        dropdownBtn.Text = "Select config..."
+
+        delBtn.Text = "DELETED!"
+        task.delay(1, function() delBtn.Text = "DELETE SELECTED CONFIG" end)
+
+        refreshOptions()
+    end)
+
+    -- Close dropdown on outside click
     UserInputService.InputBegan:Connect(function(input, processed)
         if processed then return end
         if input.UserInputType == Enum.UserInputType.MouseButton1
@@ -1913,7 +2198,7 @@ do
     local note = Instance.new("TextLabel")
     note.Size = UDim2.new(1, 0, 0, 60)
     note.BackgroundTransparency = 1
-    note.Text = "Saves ESP flags, fly speed, walkspeed, jumppower, noclip, and checkpoints. Not saved: flying state, attack-all, and lighting presets."
+    note.Text = "Saves ESP flags, fly speed, walkspeed, jumppower, noclip, and checkpoints. Persists across rejoins IF your executor supports file I/O (writefile/readfile/listfiles). Otherwise only survives within the same session via getgenv."
     note.TextColor3 = Color3.fromRGB(180, 180, 190)
     note.Font = Enum.Font.Gotham
     note.TextSize = 12
