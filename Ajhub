@@ -32,7 +32,7 @@ gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
 -- ============================================================
--- Config persistence
+-- Config persistence (Delta supports file I/O)
 -- ============================================================
 local CONFIG_STORE = {}
 
@@ -74,13 +74,20 @@ local function tryListFiles()
     return out
 end
 
+local function tryDeleteFile(name)
+    pcall(function()
+        if delfile then
+            delfile("AhubJ_" .. name .. ".json")
+        end
+    end)
+end
+
 -- ============================================================
 -- FORWARD-DECLARED SHARED STATE
--- (must come before PLAYER tab so configRefs closures can see them)
 -- ============================================================
 local checkpoints = {}
 local cpCount = 0
-local listFrame          -- will be assigned in TELEPORTER tab
+local listFrame
 
 local ESP = {
     enabled   = false,
@@ -535,7 +542,7 @@ local function startFly(getMaxSpeed)
 end
 
 -- ============================================================
--- ESP state machine (defined globally so config can reach it)
+-- ESP state machine
 -- ============================================================
 local function toHex(c)
     return string.format("%02X%02X%02X",
@@ -753,7 +760,7 @@ local function espStop()
 end
 
 -- ============================================================
--- Checkpoint helpers (so config can rebuild them)
+-- Checkpoint helper
 -- ============================================================
 local function makeCheckpointRow(entryName, pos)
     if not listFrame then return end
@@ -844,9 +851,7 @@ local function makeCheckpointRow(entryName, pos)
 end
 
 -- ============================================================
--- configRefs closures — getState/setState
--- (these now see `checkpoints`, `cpCount`, `listFrame`, ESP etc.
---  because they are declared at the top of the file)
+-- configRefs closures
 -- ============================================================
 do
     configRefs.getState = function()
@@ -871,7 +876,6 @@ do
             checkpoints = {},
         }
 
-        -- Read current UI box values if accessible (stored on the page)
         if playerPage and playerPage:FindFirstChild("WalkSpeedBox") then
             state.walkSpeed = playerPage.WalkSpeedBox.Text
         end
@@ -896,7 +900,6 @@ do
     configRefs.setState = function(data)
         if type(data) ~= "table" then return end
 
-        -- Update UI textboxes if present
         if playerPage then
             if data.walkSpeed and playerPage:FindFirstChild("WalkSpeedBox") then
                 playerPage.WalkSpeedBox.Text = tostring(data.walkSpeed)
@@ -909,7 +912,6 @@ do
             end
         end
 
-        -- Apply walk/jump immediately
         local char = LocalPlayer.Character
         local h = char and char:FindFirstChildOfClass("Humanoid")
         if h then
@@ -920,7 +922,6 @@ do
             end
         end
 
-        -- ESP flags
         if data.espBox       ~= nil then ESP.box       = data.espBox       end
         if data.espLines     ~= nil then ESP.lines     = data.espLines     end
         if data.espName      ~= nil then ESP.name      = data.espName      end
@@ -935,7 +936,6 @@ do
             if c then ESP.chamColor = c end
         end
 
-        -- ESP enable/disable
         if data.espEnabled ~= nil then
             if data.espEnabled and not ESP.enabled then
                 espStart()
@@ -944,12 +944,10 @@ do
             end
         end
 
-        -- Noclip
         if data.noclip ~= nil and data.noclip ~= noclipEnabled then
             toggleNoclip()
         end
 
-        -- Checkpoints
         if type(data.checkpoints) == "table" then
             for i = #checkpoints, 1, -1 do
                 if checkpoints[i] and checkpoints[i].row then
@@ -1031,7 +1029,6 @@ do
 
     makeInputRow("Fly Speed", "50", function() end, "FlySpeedBox")
 
-    -- Teleport to User
     local tpRow = Instance.new("Frame")
     tpRow.Size = UDim2.new(1, 0, 0, 34)
     tpRow.BackgroundTransparency = 1
@@ -1098,7 +1095,6 @@ do
         end
     end)
 
-    -- FLY
     local flyBtn = Instance.new("TextButton")
     flyBtn.Size = UDim2.new(1, 0, 0, 34)
     flyBtn.BackgroundColor3 = BLUE
@@ -1126,7 +1122,6 @@ do
         end
     end)
 
-    -- NOCLIP
     local noclipBtn = Instance.new("TextButton")
     noclipBtn.Size = UDim2.new(1, 0, 0, 34)
     noclipBtn.BackgroundColor3 = BLUE
@@ -1145,7 +1140,6 @@ do
         noclipBtn.BackgroundColor3 = noclipEnabled and GREEN or BLUE
     end)
 
-    -- ESP UI
     local function makeRow()
         local r = Instance.new("Frame")
         r.Size = UDim2.new(1, 0, 0, 30)
@@ -1379,23 +1373,15 @@ do
     cpButton.Parent = tpPage
     Instance.new("UICorner", cpButton).CornerRadius = UDim.new(0, 6)
 
-    local function flash(button, flashText, flashColor, restoreText, restoreColor)
-        local oldText = button.Text
-        local oldColor = button.BackgroundColor3
-        button.Text = flashText
-        button.BackgroundColor3 = flashColor
-        task.delay(0.6, function()
-            button.Text = restoreText or oldText
-            button.BackgroundColor3 = restoreColor or oldColor
-        end)
-    end
-
     cpButton.MouseButton1Click:Connect(function()
         local char = LocalPlayer.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
         if not hrp then return end
         makeCheckpointRow("CP #" .. (cpCount + 1), hrp.CFrame)
-        flash(cpButton, "Saved!", BLUE, "MAKE CHECKPOINT", GREEN)
+        cpButton.Text = "Saved!"
+        task.delay(0.6, function()
+            cpButton.Text = "MAKE CHECKPOINT"
+        end)
     end)
 end
 
@@ -1669,226 +1655,9 @@ end
 -- SETTINGS tab
 -- ============================================================
 do
-    local header = Instance.new("TextLabel")
-    header.Size = UDim2.new(1, 0, 0, 28)
-    header.BackgroundTransparency = 1
-    header.Text = "CONFIG"
-    header.TextColor3 = LIGHT
-    header.Font = Enum.Font.GothamBold
-    header.TextSize = 16
-    header.TextXAlignment = Enum.TextXAlignment.Left
-    header.ZIndex = 4
-    header.Parent = settingsPage
-
-    local saveRow = Instance.new("Frame")
-    saveRow.Size = UDim2.new(1, 0, 0, 34)
-    saveRow.BackgroundTransparency = 1
-    saveRow.ZIndex = 4
-    saveRow.Parent = settingsPage
-    local saveLayout = Instance.new("UIListLayout")
-    saveLayout.FillDirection = Enum.FillDirection.Horizontal
-    saveLayout.Padding = UDim.new(0, 6)
-    saveLayout.Parent = saveRow
-
-    local nameInput = Instance.new("TextBox")
-    nameInput.Size = UDim2.new(0.65, -3, 1, 0)
-    nameInput.BackgroundColor3 = DARK
-    nameInput.BackgroundTransparency = 0.15
-    nameInput.BorderSizePixel = 0
-    nameInput.Text = ""
-    nameInput.PlaceholderText = "Config name..."
-    nameInput.TextColor3 = LIGHT
-    nameInput.Font = Enum.Font.Gotham
-    nameInput.TextSize = 14
-    nameInput.ClearTextOnFocus = false
-    nameInput.ZIndex = 4
-    nameInput.Parent = saveRow
-    Instance.new("UICorner", nameInput).CornerRadius = UDim.new(0, 6)
-
-    local saveBtn = Instance.new("TextButton")
-    saveBtn.Size = UDim2.new(0.35, -3, 1, 0)
-    saveBtn.BackgroundColor3 = GREEN
-    saveBtn.BorderSizePixel = 0
-    saveBtn.Text = "SAVE CONFIG"
-    saveBtn.TextColor3 = WHITE
-    saveBtn.Font = Enum.Font.GothamBold
-    saveBtn.TextSize = 13
-    saveBtn.ZIndex = 4
-    saveBtn.Parent = saveRow
-    Instance.new("UICorner", saveBtn).CornerRadius = UDim.new(0, 6)
-
-    local loadRow = Instance.new("Frame")
-    loadRow.Size = UDim2.new(1, 0, 0, 34)
-    loadRow.BackgroundTransparency = 1
-    loadRow.ZIndex = 4
-    loadRow.Parent = settingsPage
-    local loadLayout = Instance.new("UIListLayout")
-    loadLayout.FillDirection = Enum.FillDirection.Horizontal
-    loadLayout.Padding = UDim.new(0, 6)
-    loadLayout.Parent = loadRow
-
-    local dropdownBtn = Instance.new("TextButton")
-    dropdownBtn.Size = UDim2.new(0.65, -3, 1, 0)
-    dropdownBtn.BackgroundColor3 = DARK
-    dropdownBtn.BackgroundTransparency = 0.15
-    dropdownBtn.BorderSizePixel = 0
-    dropdownBtn.Text = "Select config..."
-    dropdownBtn.TextColor3 = LIGHT
-    dropdownBtn.Font = Enum.Font.Gotham
-    dropdownBtn.TextSize = 13
-    dropdownBtn.TextXAlignment = Enum.TextXAlignment.Left
-    dropdownBtn.ZIndex = 4
-    dropdownBtn.Parent = loadRow
-    Instance.new("UICorner", dropdownBtn).CornerRadius = UDim.new(0, 6)
-
-    local loadBtn = Instance.new("TextButton")
-    loadBtn.Size = UDim2.new(0.35, -3, 1, 0)
-    loadBtn.BackgroundColor3 = BLUE
-    loadBtn.BorderSizePixel = 0
-    loadBtn.Text = "LOAD CONFIG"
-    loadBtn.TextColor3 = WHITE
-    loadBtn.Font = Enum.Font.GothamBold
-    loadBtn.TextSize = 13
-    loadBtn.ZIndex = 4
-    loadBtn.Parent = loadRow
-    Instance.new("UICorner", loadBtn).CornerRadius = UDim.new(0, 6)
-
-    local selectedConfig = nil
-
-    local optionsFrame = Instance.new("Frame")
-    optionsFrame.Size = UDim2.new(0.65, -3, 0, 140)
-    optionsFrame.Position = UDim2.new(0, 0, 0, 0)
-    optionsFrame.BackgroundColor3 = DARKER
-    optionsFrame.BackgroundTransparency = 0.05
-    optionsFrame.BorderSizePixel = 0
-    optionsFrame.Visible = false
-    optionsFrame.ZIndex = 20
-    optionsFrame.Parent = settingsPage
-    Instance.new("UICorner", optionsFrame).CornerRadius = UDim.new(0, 6)
-
-    local optionsLayout = Instance.new("UIListLayout")
-    optionsLayout.FillDirection = Enum.FillDirection.Vertical
-    optionsLayout.Padding = UDim.new(0, 3)
-    optionsLayout.Parent = optionsFrame
-
-    local optionsPad = Instance.new("UIPadding")
-    optionsPad.PaddingTop = UDim.new(0, 6)
-    optionsPad.PaddingBottom = UDim.new(0, 6)
-    optionsPad.PaddingLeft = UDim.new(0, 6)
-    optionsPad.PaddingRight = UDim.new(0, 6)
-    optionsPad.Parent = optionsFrame
-
-    local function refreshOptions()
-        for _, c in ipairs(optionsFrame:GetChildren()) do
-            if c:IsA("TextButton") or c:IsA("TextLabel") then c:Destroy() end
-        end
-
-        local names = tryListFiles()
-        for name in pairs(CONFIG_STORE) do
-            if not table.find(names, name) then table.insert(names, name) end
-        end
-
-        if #names == 0 then
-            local e = Instance.new("TextLabel")
-            e.Size = UDim2.new(1, 0, 0, 24)
-            e.BackgroundTransparency = 1
-            e.Text = "(no saved configs)"
-            e.TextColor3 = Color3.fromRGB(160, 160, 170)
-            e.Font = Enum.Font.Gotham
-            e.TextSize = 12
-            e.ZIndex = 21
-            e.Parent = optionsFrame
-            return
-        end
-
-        table.sort(names)
-        for _, name in ipairs(names) do
-            local opt = Instance.new("TextButton")
-            opt.Size = UDim2.new(1, 0, 0, 26)
-            opt.BackgroundColor3 = DARK
-            opt.BackgroundTransparency = 0.15
-            opt.BorderSizePixel = 0
-            opt.Text = name
-            opt.TextColor3 = LIGHT
-            opt.Font = Enum.Font.Gotham
-            opt.TextSize = 13
-            opt.TextXAlignment = Enum.TextXAlignment.Left
-            opt.ZIndex = 21
-            opt.Parent = optionsFrame
-            Instance.new("UICorner", opt).CornerRadius = UDim.new(0, 4)
-
-            opt.MouseButton1Click:Connect(function()
-                selectedConfig = name
-                dropdownBtn.Text = name
-                optionsFrame.Visible = false
-            end)
-        end
-    end
-
-    dropdownBtn.MouseButton1Click:Connect(function()
-        refreshOptions()
-        optionsFrame.Visible = not optionsFrame.Visible
-    end)
-
-    saveBtn.MouseButton1Click:Connect(function()
-        local name = nameInput.Text
-        if name == "" then
-            name = "default"
-            nameInput.Text = name
-        end
-
-        local data = configRefs.getState and configRefs.getState() or nil
-        if not data then
-            saveBtn.Text = "FAILED"
-            task.delay(1, function() saveBtn.Text = "SAVE CONFIG" end)
-            return
-        end
-
-        CONFIG_STORE[name] = deepCopy(data)
-
-        local ok, encoded = pcall(function()
-            return HttpService:JSONEncode(data)
-        end)
-        if ok and encoded then
-            tryWriteFile(name, encoded)
-        end
-
-        saveBtn.Text = "SAVED!"
-        task.delay(1, function() saveBtn.Text = "SAVE CONFIG" end)
-
-        refreshOptions()
-    end)
-
-    loadBtn.MouseButton1Click:Connect(function()
-        if not selectedConfig then
-            loadBtn.Text = "PICK FIRST"
-            task.delay(1, function() loadBtn.Text = "LOAD CONFIG" end)
-            return
-        end
-
-        local data = CONFIG_STORE[selectedConfig]
-        if not data then
-            local raw = tryReadFile(selectedConfig)
-            if raw then
-                local ok, decoded = pcall(function()
-                    return HttpService:JSONDecode(raw)
-                end)
-                if ok and type(decoded) == "table" then
-                    data = decoded
-                    CONFIG_STORE[selectedConfig] = data
-                end
-            end
-        end
-
--- ============================================================
--- SETTINGS tab
--- ============================================================
-do
-    -- Persistent store: survives re-execution within the same executor session
     getgenv().AhubJ_CONFIG_STORE = getgenv().AhubJ_CONFIG_STORE or CONFIG_STORE
     CONFIG_STORE = getgenv().AhubJ_CONFIG_STORE
 
-    -- Optional: auto-load any configs from disk on script start
     for _, name in ipairs(tryListFiles()) do
         if not CONFIG_STORE[name] then
             local raw = tryReadFile(name)
@@ -1912,7 +1681,6 @@ do
     header.ZIndex = 4
     header.Parent = settingsPage
 
-    -- Save row
     local saveRow = Instance.new("Frame")
     saveRow.Size = UDim2.new(1, 0, 0, 34)
     saveRow.BackgroundTransparency = 1
@@ -1950,7 +1718,6 @@ do
     saveBtn.Parent = saveRow
     Instance.new("UICorner", saveBtn).CornerRadius = UDim.new(0, 6)
 
-    -- Load row
     local loadRow = Instance.new("Frame")
     loadRow.Size = UDim2.new(1, 0, 0, 34)
     loadRow.BackgroundTransparency = 1
@@ -1987,7 +1754,6 @@ do
     loadBtn.Parent = loadRow
     Instance.new("UICorner", loadBtn).CornerRadius = UDim.new(0, 6)
 
-    -- Delete row (new — lets you clean up saved configs)
     local delRow = Instance.new("Frame")
     delRow.Size = UDim2.new(1, 0, 0, 30)
     delRow.BackgroundTransparency = 1
@@ -2008,7 +1774,6 @@ do
 
     local selectedConfig = nil
 
-    -- Dropdown panel
     local optionsFrame = Instance.new("Frame")
     optionsFrame.Size = UDim2.new(0.65, -3, 0, 140)
     optionsFrame.Position = UDim2.new(0, 0, 0, 0)
@@ -2084,7 +1849,6 @@ do
         optionsFrame.Visible = not optionsFrame.Visible
     end)
 
-    -- SAVE
     saveBtn.MouseButton1Click:Connect(function()
         local name = nameInput.Text
         if name == "" then
@@ -2115,7 +1879,6 @@ do
         refreshOptions()
     end)
 
-    -- LOAD
     loadBtn.MouseButton1Click:Connect(function()
         if not selectedConfig then
             loadBtn.Text = "PICK FIRST"
@@ -2152,7 +1915,6 @@ do
         task.delay(1, function() loadBtn.Text = "LOAD CONFIG" end)
     end)
 
-    -- DELETE
     delBtn.MouseButton1Click:Connect(function()
         if not selectedConfig then
             delBtn.Text = "PICK ONE FIRST"
@@ -2163,11 +1925,7 @@ do
         CONFIG_STORE[selectedConfig] = nil
         getgenv().AhubJ_CONFIG_STORE = CONFIG_STORE
 
-        pcall(function()
-            if delfile then
-                delfile("AhubJ_" .. selectedConfig .. ".json")
-            end
-        end)
+        tryDeleteFile(selectedConfig)
 
         selectedConfig = nil
         dropdownBtn.Text = "Select config..."
@@ -2178,7 +1936,6 @@ do
         refreshOptions()
     end)
 
-    -- Close dropdown on outside click
     UserInputService.InputBegan:Connect(function(input, processed)
         if processed then return end
         if input.UserInputType == Enum.UserInputType.MouseButton1
@@ -2198,7 +1955,7 @@ do
     local note = Instance.new("TextLabel")
     note.Size = UDim2.new(1, 0, 0, 60)
     note.BackgroundTransparency = 1
-    note.Text = "Saves ESP flags, fly speed, walkspeed, jumppower, noclip, and checkpoints. Persists across rejoins IF your executor supports file I/O (writefile/readfile/listfiles). Otherwise only survives within the same session via getgenv."
+    note.Text = "Delta supports file I/O — configs persist across rejoins. Saves ESP flags, fly speed, walkspeed, jumppower, noclip, and checkpoints. Not saved: flying state, attack-all, lighting presets."
     note.TextColor3 = Color3.fromRGB(180, 180, 190)
     note.Font = Enum.Font.Gotham
     note.TextSize = 12
