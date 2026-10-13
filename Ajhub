@@ -22,7 +22,7 @@ local DARKER = Color3.fromRGB(22, 22, 28)
 local LIGHT  = Color3.fromRGB(235, 235, 240)
 local WHITE  = Color3.new(1, 1, 1)
 
-local BG_IMAGE = "rbxassetid://133950324513596"
+local BG_IMAGE = "rbxassetid://106808010345371"
 
 local gui = Instance.new("ScreenGui")
 gui.Name = "AhubJ"
