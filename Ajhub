@@ -32,9 +32,22 @@ gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
 -- ============================================================
--- Config persistence (Delta supports file I/O)
+-- Config persistence (Delta file I/O with folder argument fix)
 -- ============================================================
 local CONFIG_STORE = {}
+local CONFIG_FOLDER = "AhubJ_Configs"
+
+local function ensureFolder()
+    pcall(function()
+        if makefolder then
+            makefolder(CONFIG_FOLDER)
+        end
+    end)
+end
+
+local function configPath(name)
+    return CONFIG_FOLDER .. "/" .. name .. ".json"
+end
 
 local function deepCopy(t)
     if type(t) ~= "table" then return t end
@@ -46,7 +59,8 @@ end
 local function tryWriteFile(name, data)
     pcall(function()
         if writefile then
-            writefile("AhubJ_" .. name .. ".json", data)
+            ensureFolder()
+            writefile(configPath(name), data)
         end
     end)
 end
@@ -54,7 +68,7 @@ end
 local function tryReadFile(name)
     local ok, data = pcall(function()
         if readfile then
-            return readfile("AhubJ_" .. name .. ".json")
+            return readfile(configPath(name))
         end
     end)
     if ok and data then return data end
@@ -65,8 +79,9 @@ local function tryListFiles()
     local out = {}
     pcall(function()
         if listfiles then
-            for _, f in ipairs(listfiles()) do
-                local n = f:match("AhubJ_(.+)%.json")
+            ensureFolder()
+            for _, f in ipairs(listfiles(CONFIG_FOLDER)) do
+                local n = f:match("([^/\\]+)%.json$")
                 if n then table.insert(out, n) end
             end
         end
@@ -77,7 +92,7 @@ end
 local function tryDeleteFile(name)
     pcall(function()
         if delfile then
-            delfile("AhubJ_" .. name .. ".json")
+            delfile(configPath(name))
         end
     end)
 end
@@ -1955,7 +1970,7 @@ do
     local note = Instance.new("TextLabel")
     note.Size = UDim2.new(1, 0, 0, 60)
     note.BackgroundTransparency = 1
-    note.Text = "Delta supports file I/O — configs persist across rejoins. Saves ESP flags, fly speed, walkspeed, jumppower, noclip, and checkpoints. Not saved: flying state, attack-all, lighting presets."
+    note.Text = "Configs save to the AhubJ_Configs folder on Delta and persist across rejoins. Saves ESP flags, fly speed, walkspeed, jumppower, noclip, and checkpoints. Not saved: flying state, attack-all, lighting presets."
     note.TextColor3 = Color3.fromRGB(180, 180, 190)
     note.Font = Enum.Font.Gotham
     note.TextSize = 12
